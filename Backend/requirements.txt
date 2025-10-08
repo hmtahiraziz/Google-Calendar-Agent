@@ -1,0 +1,12 @@
+fastapi
+uvicorn
+langchain
+langGraph
+langchain-huggingface
+pydantic
+python-dotenv
+google-auth
+google-auth-oauthlib
+google-auth-httplib2
+google-api-python-client
+langchain_google_genai
