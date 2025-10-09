@@ -57,11 +57,16 @@ def cancel_event_tool(title: str, date: str):
 
 
 @tool
-def reschedule_event_tool(old_title: str, old_date: str, new_date: str, new_time: str, end_time: str = None):
-    """Reschedule one or multiple events per day."""
-    print(f"⚡ reschedule_event_tool called: {old_title} from {old_date} to {new_date} at {new_time}-{end_time}")
+def reschedule_event_tool(old_title: str, old_date: str, new_date: str, new_time: str = "", end_time: str = None):
+    """Handles user input and delegates to calendar_tools.reschedule_event"""
+    print(f"⚡ reschedule_event_tool called: {old_title} from {old_date} to {new_date} at {new_time or 'same time'}-{end_time or ''}")
+    
+    # Normalize dates (handles 'today', 'tomorrow', 'next Monday', etc.)
     if not re.match(r"\d{4}-\d{2}-\d{2}", old_date):
         old_date = calendar_tools.parse_date(old_date)
     if not re.match(r"\d{4}-\d{2}-\d{2}", new_date):
         new_date = calendar_tools.parse_date(new_date)
+    
+    # Just delegate to calendar_tools
     return calendar_tools.reschedule_event(old_title, old_date, new_date, new_time, end_time)
+

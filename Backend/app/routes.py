@@ -24,6 +24,8 @@ Rules:
 3. Only respond conversationally if no tool is needed.
 4. Always use YYYY-MM-DD for dates and HH:MM for times.
 
+Special Instructions:
+
 Tools available:
 {tool_descriptions}
 """

@@ -160,7 +160,16 @@ def cancel_event(title: str, date: str):
     return f"⚠️ No meeting(s) found for '{title}' on {date}."
 
 # --- RESCHEDULE EVENTS ---
-def reschedule_event(old_title: str, old_date: str, new_date: str, new_time: str, end_time: str = None):
+def reschedule_event(old_title: str, old_date: str, new_date: str, new_time: str = "", end_time: str = None):
+    """
+    Reschedules one or multiple events.
+    Handles:
+    - "all" or specific event titles
+    - relative or absolute dates
+    - same time if no time specified
+    - duration preservation if applicable
+    """
+
     service = get_calendar_service()
     start_of_day = datetime.strptime(old_date, "%Y-%m-%d")
     end_of_day = start_of_day + timedelta(days=1)
@@ -173,17 +182,58 @@ def reschedule_event(old_title: str, old_date: str, new_date: str, new_time: str
     ).execute()
 
     events = events_result.get("items", [])
-    updated = []
-    for e in events:
-        if old_title.lower() in e["summary"].lower() or old_title.lower() in ["all", "everything"]:
-            start_datetime = datetime.strptime(f"{new_date} {new_time}", "%Y-%m-%d %H:%M")
-            end_datetime = datetime.strptime(f"{new_date} {end_time}", "%Y-%m-%d %H:%M") if end_time else start_datetime + timedelta(hours=1)
+    if not events:
+        return f"⚠️ No events found on {old_date}."
 
-            e["start"]["dateTime"] = start_datetime.isoformat()
-            e["end"]["dateTime"] = end_datetime.isoformat()
-            service.events().update(calendarId="primary", eventId=e["id"], body=e).execute()
-            updated.append(e["summary"])
-    
+    # Filter target events
+    target_events = [
+        e for e in events
+        if old_title.lower() in ["all", "everything"] or old_title.lower() in e["summary"].lower()
+    ]
+    if not target_events:
+        return f"⚠️ No matching events for '{old_title}' found on {old_date}."
+
+    updated = []
+    for e in target_events:
+        start_str = e["start"].get("dateTime")
+        end_str = e["end"].get("dateTime")
+        if not start_str or not end_str:
+            continue
+
+        start_dt = datetime.fromisoformat(start_str.replace("Z", "+00:00"))
+        end_dt = datetime.fromisoformat(end_str.replace("Z", "+00:00"))
+        duration = end_dt - start_dt
+
+        # --- Time Handling ---
+        if not new_time or new_time.lower() in ["same", "same time", ""]:
+            # keep same start time
+            new_start = datetime.strptime(f"{new_date} {start_dt.strftime('%H:%M')}", "%Y-%m-%d %H:%M")
+            new_end = new_start + duration
+        else:
+            # normalize time (e.g., “3pm” → “15:00”)
+            from app.tools.calendar_tools import standardize_time
+            new_start_time = standardize_time(new_time)
+
+            if end_time:
+                new_end_time = standardize_time(end_time)
+                new_start = datetime.strptime(f"{new_date} {new_start_time}", "%Y-%m-%d %H:%M")
+                new_end = datetime.strptime(f"{new_date} {new_end_time}", "%Y-%m-%d %H:%M")
+            else:
+                new_start = datetime.strptime(f"{new_date} {new_start_time}", "%Y-%m-%d %H:%M")
+                new_end = new_start + duration
+
+        # --- Apply Update ---
+        e["start"]["dateTime"] = new_start.isoformat()
+        e["end"]["dateTime"] = new_end.isoformat()
+        service.events().update(calendarId="primary", eventId=e["id"], body=e).execute()
+        updated.append(e["summary"])
+
     if updated:
-        return f"✅ Rescheduled {len(updated)} event(s): {', '.join(updated)}"
-    return f"⚠️ No meeting(s) titled '{old_title}' found on {old_date}."
+        if old_title.lower() in ["all", "everything"]:
+            if not new_time:
+                return f"✅ Rescheduled {len(updated)} event(s) from {old_date} to {new_date} (kept same times)."
+            return f"✅ Rescheduled {len(updated)} event(s) from {old_date} to {new_date} at {new_time}."
+        else:
+            return f"✅ Rescheduled '{old_title}' from {old_date} to {new_date} ({'same time' if not new_time else new_time})."
+
+    return f"⚠️ Could not reschedule any events from {old_date}."
