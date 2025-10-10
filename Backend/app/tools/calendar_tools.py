@@ -1,5 +1,6 @@
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from app.services.google_calendar_service import get_calendar_service
+from typing import List, Tuple, Optional
 import re
 
 # --- Date Parsing Function (unchanged) ---
@@ -237,3 +238,138 @@ def reschedule_event(old_title: str, old_date: str, new_date: str, new_time: str
             return f"✅ Rescheduled '{old_title}' from {old_date} to {new_date} ({'same time' if not new_time else new_time})."
 
     return f"⚠️ Could not reschedule any events from {old_date}."
+
+
+# --- CONFLICT DETECTION FUNCTIONS ---
+def check_scheduling_conflict(date: str, start_time: str, end_time: str) -> Tuple[bool, List[dict]]:
+    """
+    Check if there's a scheduling conflict for the given time slot.
+    Returns (has_conflict, conflicting_events)
+    """
+    
+    service = get_calendar_service()
+    start_of_day = datetime.strptime(date, "%Y-%m-%d")
+    end_of_day = start_of_day + timedelta(days=1)
+    
+    # Parse the requested time slot with timezone awareness
+    requested_start = datetime.strptime(f"{date} {start_time}", "%Y-%m-%d %H:%M").replace(tzinfo=timezone.utc)
+    requested_end = datetime.strptime(f"{date} {end_time}", "%Y-%m-%d %H:%M").replace(tzinfo=timezone.utc)
+    
+    events_result = service.events().list(
+        calendarId="primary",
+        timeMin=start_of_day.isoformat() + "Z",
+        timeMax=end_of_day.isoformat() + "Z",
+        singleEvents=True,
+        orderBy="startTime"
+    ).execute()
+    
+    events = events_result.get("items", [])
+    conflicting_events = []
+    
+    for event in events:
+        event_start_str = event["start"].get("dateTime")
+        event_end_str = event["end"].get("dateTime")
+        
+        if event_start_str and event_end_str:
+            event_start = datetime.fromisoformat(event_start_str.replace("Z", "+00:00"))
+            event_end = datetime.fromisoformat(event_end_str.replace("Z", "+00:00"))
+            
+            # Check for overlap (now both are timezone-aware)
+            if (requested_start < event_end and requested_end > event_start):
+                conflicting_events.append({
+                    "title": event["summary"],
+                    "start": event_start.strftime("%H:%M"),
+                    "end": event_end.strftime("%H:%M")
+                })
+    
+    return len(conflicting_events) > 0, conflicting_events
+
+
+def get_available_slots(date: str, duration_hours: int = 2) -> List[str]:
+    """
+    Get available time slots for a given duration on a specific date.
+    """
+    
+    service = get_calendar_service()
+    start_of_day = datetime.strptime(date, "%Y-%m-%d")
+    end_of_day = start_of_day + timedelta(days=1)
+    
+    events_result = service.events().list(
+        calendarId="primary",
+        timeMin=start_of_day.isoformat() + "Z",
+        timeMax=end_of_day.isoformat() + "Z",
+        singleEvents=True,
+        orderBy="startTime"
+    ).execute()
+    
+    events = events_result.get("items", [])
+    
+    # Define working hours (9 AM to 6 PM) with timezone awareness
+    working_start = start_of_day.replace(hour=9, minute=0, tzinfo=timezone.utc)
+    working_end = start_of_day.replace(hour=18, minute=0, tzinfo=timezone.utc)
+    
+    # Get all booked time slots
+    booked_slots = []
+    for event in events:
+        event_start_str = event["start"].get("dateTime")
+        event_end_str = event["end"].get("dateTime")
+        
+        if event_start_str and event_end_str:
+            event_start = datetime.fromisoformat(event_start_str.replace("Z", "+00:00"))
+            event_end = datetime.fromisoformat(event_end_str.replace("Z", "+00:00"))
+            booked_slots.append((event_start, event_end))
+    
+    # Find available slots
+    available_slots = []
+    current_time = working_start
+    
+    while current_time + timedelta(hours=duration_hours) <= working_end:
+        slot_end = current_time + timedelta(hours=duration_hours)
+        
+        # Check if this slot conflicts with any booked events
+        has_conflict = False
+        for booked_start, booked_end in booked_slots:
+            if (current_time < booked_end and slot_end > booked_start):
+                has_conflict = True
+                break
+        
+        if not has_conflict:
+            available_slots.append(f"{current_time.strftime('%H:%M')}-{slot_end.strftime('%H:%M')}")
+        
+        current_time += timedelta(hours=1)  # Check every hour
+    
+    return available_slots[:5]  # Return max 5 options
+
+
+def create_event_with_conflict_check(title: str, date: str, start_time: str, end_time: str = None, force: bool = False):
+    """
+    Create an event with conflict detection. If force=True, creates despite conflicts.
+    """
+    try:
+        if not end_time:
+            start_dt = datetime.strptime(f"{date} {start_time}", "%Y-%m-%d %H:%M")
+            end_time = (start_dt + timedelta(hours=1)).strftime("%H:%M")
+        
+        if not force:
+            has_conflict, conflicting_events = check_scheduling_conflict(date, start_time, end_time)
+            
+            if has_conflict:
+                conflict_message = f"⚠️ Scheduling conflict detected.\n"
+                for event in conflicting_events:
+                    conflict_message += f"- {event['title']} ({event['start']}-{event['end']})\n"
+                
+                # Get available slots
+                duration = (datetime.strptime(end_time, "%H:%M") - datetime.strptime(start_time, "%H:%M")).total_seconds() / 3600
+                available_slots = get_available_slots(date, int(duration))
+                
+                conflict_message += f"\nYou can say 'Schedule' to schedule at the same time, or choose one of these available slots:\n"
+                for slot in available_slots:
+                    conflict_message += f"- {slot}\n"
+                
+                return conflict_message
+        
+        # No conflict or force=True, proceed with creation
+        return create_event(title, date, start_time, end_time)
+        
+    except Exception as e:
+        return f"❌ Error creating event: {str(e)}"
